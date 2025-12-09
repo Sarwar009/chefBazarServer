@@ -3,6 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
+const jwt = require("jsonwebtoken");
 const port = process.env.PORT || 3000;
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
@@ -23,21 +24,42 @@ app.use(
 );
 app.use(express.json());
 
-// jwt middlewares
+
 const verifyJWT = async (req, res, next) => {
-  const token = req?.headers?.authorization?.split(" ")[1];
-  console.log(token);
-  if (!token) return res.status(401).send({ message: "Unauthorized Access!" });
+  const authHeader = req.headers.authorization;
+  if (!authHeader)
+    return res.status(401).send({ message: "Unauthorized: No token provided" });
+
+  const token = authHeader.split(" ")[1];
+
   try {
-    const decoded = await admin.auth().verifyIdToken(token);
-    req.tokenEmail = decoded.email;
-    console.log(decoded);
+    // Verify Firebase token
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.email = decodedToken.email;
+    req.role = decodedToken.role || "user"; // default role if not set
     next();
   } catch (err) {
-    console.log(err);
-    return res.status(401).send({ message: "Unauthorized Access!", err });
+    console.error("JWT verification failed:", err);
+    return res.status(403).send({ message: "Forbidden: Invalid token" });
   }
 };
+
+// Role check middleware
+const verifyRole = (requiredRoles) => (req, res, next) => {
+  if (!req.role) {
+    return res.status(403).send({ message: "Access Denied: Role not found" });
+  }
+
+  // Convert to array if single string
+  const rolesArray = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
+
+  if (!rolesArray.includes(req.role)) {
+    return res.status(403).send({ message: "Access Denied: Insufficient role" });
+  }
+
+  next();
+};
+
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(process.env.MONGODB_URI, {
@@ -47,15 +69,104 @@ const client = new MongoClient(process.env.MONGODB_URI, {
     deprecationErrors: true,
   },
 });
+
+let usersCollection;
+
 async function run() {
   try {
     const db = client.db("mealDB");
+    // user Collection
+    usersCollection = db.collection('user')
     // Meals Collection
     const mealsCollection = db.collection("meals");
     // revierws Collection
     const reviewCollection = db.collection("reviews");
     // favorites Collection
     const favoritesCollection = db.collection("favorites");
+    // order Collection
+    const orderCollection = db.collection("order_collection");
+
+    // user setup
+    app.post("/register", async (req, res) => {
+  const { email, displayName } = req.body;
+  const existing = await usersCollection.findOne({ email });
+  if (existing) return res.send({ message: "Already registered" });
+
+  const result = await usersCollection.insertOne({
+    email,
+    displayName,
+    role: "user", // default role
+  });
+  res.send({ result });
+});
+
+// Issue JWT after Firebase login
+app.post("/jwt", async (req, res) => {
+  const { email, displayName } = req.body;
+  let user = await usersCollection.findOne({ email });
+
+  if (!user) {
+    // Auto-register new Google user
+    const result = await usersCollection.insertOne({
+      email,
+      displayName: displayName || email.split("@")[0],
+      role: "user",
+    });
+    user = { _id: result.insertedId, email, displayName, role: "user" };
+  }
+
+  const token = jwt.sign({ email, role: user.role }, process.env.JWT_SECRET, {
+    expiresIn: "30d",
+  });
+
+  res.send({ token, role: user.role });
+});
+
+
+// Get all users (Admin only)
+app.get("/users", verifyJWT, verifyRole("admin"), async (req, res) => {
+  const users = await usersCollection.find().toArray();
+  res.send(users);
+});
+
+// Promote / Demote user (Admin only)
+app.patch("/users/:id/role", verifyJWT, verifyRole("admin"), async (req, res) => {
+  try {
+    const { role } = req.body; // 'user', 'seller', 'admin'
+    const userId = req.params.id;
+
+    // 1️⃣ Find user in MongoDB
+    const user = await usersCollection.findOne({ _id: new ObjectId(userId) });
+    if (!user) return res.status(404).send({ message: "User not found" });
+
+    // 2️⃣ Update role in MongoDB
+    await usersCollection.updateOne(
+      { _id: new ObjectId(userId) },
+      { $set: { role } }
+    );
+
+    // 3️⃣ Update Firebase custom claim
+    // Firebase uses email to set claims
+    await admin.auth().setCustomUserClaims(user.email, { role });
+
+    res.send({ message: `User role updated to ${role}` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Failed to update role", error: err.message });
+  }
+});
+
+
+// Example protected route for sellers
+app.get("/seller/data", verifyJWT, verifyRole("seller"), (req, res) => {
+  res.send({ secretData: "Only seller can see this" });
+});
+
+// Example protected route for users
+app.get("/user/data", verifyJWT, verifyRole("user"), (req, res) => {
+  res.send({ secretData: "Only normal user can see this" });
+});
+
 
 
     // meals APIs
@@ -192,6 +303,18 @@ app.delete("/favorites/:id", async (req, res) => {
 });
 
 
+// Order Api
+app.post("/orders", async (req, res) => {
+  try {
+
+    const result = await orderCollection.insertOne(req.body);
+
+    res.send({ success: true, insertedId: result.insertedId });
+  } catch (error) {
+    console.error(error);
+    res.status(500).send({ success: false, error: "Something went wrong" });
+  }
+});
 
 
 
