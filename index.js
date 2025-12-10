@@ -316,6 +316,16 @@ app.post("/orders", async (req, res) => {
   }
 });
 
+app.get('/orders', async (req, res) => {
+  try {
+    const orders = await orderCollection.find().toArray();
+    res.status(200).json(orders);
+  } catch (err) {
+    console.error("Failed to fetch orders:", err);
+    res.status(500).json({ message: "Failed to fetch orders", error: err.message });
+  }
+})
+
 
 
 
