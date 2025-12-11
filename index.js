@@ -5,6 +5,10 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
 const jwt = require("jsonwebtoken");
 const port = process.env.PORT || 3000;
+
+const secret = process.env.JWT_SECRET;
+
+
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
 );
@@ -24,33 +28,31 @@ app.use(
 );
 app.use(express.json());
 
-
-const verifyJWT = async (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader)
-    return res.status(401).send({ message: "Unauthorized: No token provided" });
-
-  const token = authHeader.split(" ")[1];
-
-  try {
-    // Verify Firebase token
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    req.email = decodedToken.email;
-    req.role = decodedToken.role || "user"; // default role if not set
-    next();
-  } catch (err) {
-    console.error("JWT verification failed:", err);
-    return res.status(403).send({ message: "Forbidden: Invalid token" });
-  }
+const verifyJWT = (req, res, next) => {
+    const authorizationHeader = req.headers.authorization;
+    if (!authorizationHeader) {
+        return res.status(401).send({ error: true, message: 'token unavailable' });
+    }
+    const token = authorizationHeader.split(' ')[1];
+    jwt.verify(token, secret, (err, decoded) => { 
+        if (err) {
+            console.error("JWT failed", err);
+            return res.status(403).send({ error: true, message: 'Forbidden' }); 
+        }
+        
+        req.decoded = decoded;
+        req.email = decoded.email;
+        req.role = decoded.role || "user"; 
+        
+        next();
+    });
 };
-
 // Role check middleware
 const verifyRole = (requiredRoles) => (req, res, next) => {
   if (!req.role) {
     return res.status(403).send({ message: "Access Denied: Role not found" });
   }
 
-  // Convert to array if single string
   const rolesArray = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
 
   if (!rolesArray.includes(req.role)) {
@@ -328,15 +330,6 @@ app.get('/orders', async (req, res) => {
 
 // Dashboard-----------------------------------------------------
 // For admin
-
-app.get('/users', async (req, res) => {
-    try {
-        const users = await req.db.collection('users').find({}).toArray();
-        res.json(users);
-    } catch (error) {
-        res.status(500).json({ message: "Failed to fetch users", error });
-    }
-});
 
 app.put('/users/:id/block', async (req, res) => {
     const userId = req.params.id;
