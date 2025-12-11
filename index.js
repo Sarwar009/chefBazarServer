@@ -326,7 +326,65 @@ app.get('/orders', async (req, res) => {
   }
 })
 
+// Dashboard-----------------------------------------------------
+// For admin
 
+app.get('/users', async (req, res) => {
+    try {
+        const users = await req.db.collection('users').find({}).toArray();
+        res.json(users);
+    } catch (error) {
+        res.status(500).json({ message: "Failed to fetch users", error });
+    }
+});
+
+app.put('/users/:id/block', async (req, res) => {
+    const userId = req.params.id;
+    
+    try {
+        const result = await req.db.collection('users').updateOne(
+            { _id: new ObjectId(userId) }, 
+            // { $set: { isBlocked: true } }
+        );
+        if (result.modifiedCount === 1) {
+            res.json({ message: `User ${userId} blocked successfully.` });
+        } else {
+            res.status(404).json({ message: "User not found." });
+        }
+    } catch (error) {
+        res.status(500).json({ message: "Error blocking user.", error });
+    }
+});
+
+app.get('/stats', async (req, res) => {
+    try {
+        const totalUsers = await req.db.collection('users').countDocuments();
+        const totalOrders = await req.db.collection('orders').countDocuments();
+        const totalChefs = await req.db.collection('users').countDocuments({ role: 'chef' });
+        
+        res.json({
+            totalUsers,
+            totalOrders,
+            totalChefs,
+        });
+    } catch (error) {
+        res.status(500).json({ message: "Failed to fetch statistics", error });
+    }
+});
+
+
+// User Profile Update -----------------------------
+
+app.put("/update-user", async (req, res) => {
+  const { email, name, photo } = req.body;
+
+  await usersCollection.updateOne(
+    { email },
+    { $set: { displayName: name, photoURL: photo } }
+  );
+
+  res.send({ success: true });
+});
 
 
 
