@@ -83,6 +83,8 @@ async function run () {
     const favoritesCollection = db.collection ('favorites');
     // order Collection
     const orderCollection = db.collection ('order_collection');
+    // request collection
+    const requestCollection = db.collection('request')
 
     // user setup
     app.post ('/register', async (req, res) => {
@@ -166,6 +168,58 @@ async function run () {
       }
     );
 
+    // request qpi
+    // Submit request
+app.post('/requests', verifyJWT, async (req, res) => {
+  const request = req.body; // {userName, userEmail, requestType, requestStatus, requestTime}
+  try {
+    const result = await requestsCollection.insertOne(request);
+    res.send({ success: true, insertedId: result.insertedId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+// Get all requests (admin)
+app.get('/requests', verifyJWT, verifyRole('admin'), async (req, res) => {
+  const requests = await requestsCollection.find().toArray();
+  res.send(requests);
+});
+
+// Approve/Reject request
+app.patch('/requests/:id', verifyJWT, verifyRole('admin'), async (req, res) => {
+  const id = req.params.id;
+  const { action } = req.body; // "approved" or "rejected"
+  try {
+    const request = await requestsCollection.findOne({ _id: new ObjectId(id) });
+    if (!request) return res.status(404).send({ message: 'Request not found' });
+
+    await requestsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { requestStatus: action } }
+    );
+
+    // If approved, update user role and generate chefId
+    if (action === 'approved') {
+      const roleUpdate = request.requestType === 'chef' ? 'chef' : 'admin';
+      const chefId = roleUpdate === 'chef' ? `chef-${Math.floor(1000 + Math.random() * 9000)}` : null;
+
+      await usersCollection.updateOne(
+        { email: request.userEmail },
+        { $set: { role: roleUpdate, chefId: chefId } }
+      );
+    }
+
+    res.send({ success: true, action });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+
+
     // Example protected route for sellers
     app.get ('/seller/data', verifyJWT, verifyRole ('seller'), (req, res) => {
       res.send ({secretData: 'Only seller can see this'});
@@ -225,31 +279,75 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
       res.send (meals);
     });
 
-    app.get ('/meals/:id', async (req, res) => {
-      const id = req.params.id;
-      const meal = await mealsCollection.findOne ({_id: new ObjectId (id)});
-      res.send (meal);
-    });
+    app.get('/meals/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const meal = await mealsCollection.findOne({_id: new ObjectId(id)});
+    res.send(meal);
+  } catch (err) {
+    console.log("Error:", err.message);
+    res.status(500).send({ error: err.message });
+  }
+});
+
+
+    // Update meal
+app.put('/meals/:id', verifyJWT, async (req, res) => {
+  const id = req.params.id;
+  const updatedMeal = req.body;
+  try {
+    const result = await mealsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedMeal }
+    );
+    res.send({ success: true, modifiedCount: result.modifiedCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+// Delete meal
+app.delete('/meals/:id', verifyJWT, async (req, res) => {
+  const id = req.params.id;
+  try {
+    const result = await mealsCollection.deleteOne({ _id: new ObjectId(id) });
+    res.send({ success: true, deletedCount: result.deletedCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+// Get meals by chef
+app.get('/meals/chef/:chefId', async (req, res) => {
+  const chefId = req.params.chefId;
+  const meals = await mealsCollection.find({ chefId }).toArray();
+  res.send(meals);
+});
+
 
     // reviews APIs
     // POST new review
-    app.post ('/reviews', async (req, res) => {
-      try {
-        const review = req.body;
-
-        const result = await reviewCollection.insertOne (review);
-
-        // Return full review with _id
-        res.status (200).json ({
-          ...review,
-          _id: result.insertedId.toString (),
-          date: new Date (review.date).toISOString (),
-        });
-      } catch (err) {
-        console.error (err);
-        res.status (500).json ({error: 'Failed to add review'});
-      }
-    });
+    app.post('/reviews', async (req, res) => {
+  try {
+    const review = req.body;
+    // Ensure required fields exist
+    const safeReview = {
+      foodId: review.foodId,
+      rating: review.rating || 0,
+      comment: review.comment || '',
+      reviewerName: review.reviewerName || 'Anonymous',
+      reviewerImage: review.reviewerImage || '',
+      date: new Date(),
+    };
+    const result = await reviewCollection.insertOne(safeReview);
+    res.status(200).json({ ...safeReview, insertedId: result.insertedId });
+  } catch (err) {
+    console.error('Error adding review:', err);
+    res.status(500).json({ error: 'Failed to add review' });
+  }
+});
 
     // get all review
     app.get ('/reviews', verifyJWT, verifyRole ('admin'), async (req, res) => {
@@ -361,6 +459,7 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
     });
 
     // Order Api
+
     app.post ('/orders', async (req, res) => {
       try {
         const result = await orderCollection.insertOne (req.body);
@@ -384,11 +483,49 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
       }
     });
 
+    // Update order status
+app.patch('/orders/:id/status', verifyJWT, async (req, res) => {
+  const id = req.params.id;
+  const { status } = req.body; // "pending", "accepted", "delivered", "cancelled"
+  try {
+    const result = await orderCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { orderStatus: status } }
+    );
+    res.send({ success: true, modifiedCount: result.modifiedCount });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ success: false, error: err.message });
+  }
+});
+
+
     app.get('/chef/orders/:id', async (req, res) => {
   const id = req.params.id;
 
   const orders = await orderCollection.find({ chefId: id }).toArray();
   res.json(orders);
+});
+
+app.get("/orders/user/:email", async (req, res) => {
+  const email = req.params.email;
+  const orders = await ordersCollection
+    .find({ userEmail: email })
+    .sort({ orderTime: -1 })
+    .toArray();
+
+  res.send(orders);
+});
+
+app.patch("/orders/cancel/:id", async (req, res) => {
+  const id = req.params.id;
+
+  const result = await ordersCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { orderStatus: "canceled" } }
+  );
+
+  res.send(result);
 });
 
     // Dashboard-----------------------------------------------------
@@ -444,6 +581,51 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
 
       res.send ({success: true});
     });
+
+    // statistcs
+    app.get('/platform/stats', verifyJWT, verifyRole('admin'), async (req, res) => {
+  try {
+    const totalUsers = await usersCollection.countDocuments();
+    const totalChefs = await usersCollection.countDocuments({ role: 'chef' });
+    const totalOrders = await orderCollection.countDocuments();
+    const ordersDelivered = await orderCollection.countDocuments({ orderStatus: 'delivered' });
+    const ordersPending = await orderCollection.countDocuments({ orderStatus: 'pending' });
+
+    const totalRevenueAgg = await orderCollection.aggregate([
+      { $match: { paymentStatus: 'paid' } },
+      { $group: { _id: null, totalRevenue: { $sum: { $multiply: ['$price', '$quantity'] } } } }
+    ]).toArray();
+
+    const totalRevenue = totalRevenueAgg[0]?.totalRevenue || 0;
+
+    res.send({ totalUsers, totalChefs, totalOrders, ordersDelivered, ordersPending, totalRevenue });
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ error: 'Failed to fetch platform stats' });
+  }
+});
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // Send a ping to confirm a successful connection
     await client.db ('admin').command ({ping: 1});
