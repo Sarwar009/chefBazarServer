@@ -176,6 +176,38 @@ async function run () {
       res.send ({secretData: 'Only normal user can see this'});
     });
 
+    // GET /chef/stats/:uid
+app.get("/dashboard/chef/stats/:uid", async (req, res) => {
+  const uid = req.params.uid;
+
+  const meals = await mealsCollection.find({ chefId: uid }).toArray();
+  const orders = await orderCollection.find({ chefId: uid }).toArray();
+
+  const totalMeals = meals.length;
+  const totalOrders = orders.length;
+
+  // Avg rating
+  const allRatings = meals.flatMap(m => m.reviews?.map(r => r.rating) || []);
+  const avgRating =
+    allRatings.length > 0
+      ? allRatings.reduce((a, b) => a + b, 0) / allRatings.length
+      : 0;
+
+  // Total revenue
+  const totalRevenue = orders.reduce(
+    (sum, order) => sum + order.price * order.quantity,
+    0
+  );
+
+  res.send({
+    totalMeals,
+    totalOrders,
+    avgRating,
+    totalRevenue,
+  });
+});
+
+
     // meals APIs
 
     app.post ('/meals', async (req, res) => {
