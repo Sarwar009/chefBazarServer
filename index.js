@@ -213,7 +213,10 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
     app.post ('/meals', async (req, res) => {
       const meal = req.body;
       const result = await mealsCollection.insertOne (meal);
-      res.send (result);
+      res.status(200).json({
+        massage: 'Successful',
+        data: result
+      });
     });
 
     app.get ('/meals', async (req, res) => {
@@ -380,6 +383,13 @@ app.get("/dashboard/chef/stats/:uid", async (req, res) => {
           .json ({message: 'Failed to fetch orders', error: err.message});
       }
     });
+
+    app.get('/chef/orders/:id', async (req, res) => {
+  const id = req.params.id;
+
+  const orders = await orderCollection.find({ chefId: id }).toArray();
+  res.json(orders);
+});
 
     // Dashboard-----------------------------------------------------
     // For admin
