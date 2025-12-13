@@ -122,6 +122,14 @@ async function run () {
       res.send (users);
     });
 
+    app.get("/users/:email", async (req, res) => {
+  const user = await usersCollection.findOne({
+    email: req.params.email,
+  });
+  res.send(user);
+});
+
+
     app.patch (
       '/users/:id/role',
       verifyJWT,
@@ -151,6 +159,59 @@ async function run () {
         }
       }
     );
+
+    app.get("/admin/requests", verifyJWT, verifyRole('admin'), async (req, res) => {
+  const requests = await requestsCollection.find().toArray();
+  res.send(requests);
+});
+
+app.patch("/admin/requests/:id", verifyJWT, verifyRole('admin'), async (req, res) => {
+  const { id } = req.params;
+  const { approve } = req.body;
+
+  const request = await requestsCollection.findOne({
+    _id: new ObjectId(id),
+  });
+
+  if (!request) {
+    return res.status(404).send({ message: "Request not found" });
+  }
+
+  // APPROVE
+  if (approve) {
+    let chefId;
+    do {
+      chefId = `chef-${Math.floor(1000 + Math.random() * 9000)}`;
+    } while (await usersCollection.findOne({ chefId }));
+
+    // Update user
+    await usersCollection.updateOne(
+      { email: request.userEmail },
+      {
+        $set: {
+          role: "chef",
+          chefId,
+        },
+      }
+    );
+
+    // Update request
+    await requestsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: "approved" } }
+    );
+
+    return res.send({ success: true, chefId });
+  }
+
+  // REJECT
+  await requestsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: { status: "rejected" } }
+  );
+
+  res.send({ success: true });
+});
 
     app.put ('/update-user', async (req, res) => {
       const {email, name, photo} = req.body;
@@ -218,6 +279,38 @@ async function run () {
         .toArray ();
       res.send (meals);
     });
+
+    // GET my meals
+    app.get("/meals/chef/:email", async (req, res) => {
+  const email = req.params.email;
+
+  const meals = await mealsCollection
+    .find({ userEmail: email })
+    .toArray();
+
+  res.send(meals);
+});
+
+    // DELETE meal
+    app.delete ('/meals/:id', async (req, res) => {
+      const id = req.params.id;
+      const result = await mealsCollection.deleteOne ({_id: new ObjectId (id)});
+      res.send (result);
+    });
+
+    // UPDATE meal
+app.patch("/meals/:id", async (req, res) => {
+  const id = req.params.id;
+  const updatedMeal = req.body;
+
+  const result = await mealsCollection.updateOne(
+    { _id: new ObjectId(id) },
+    { $set: updatedMeal }
+  );
+
+  res.send(result);
+});
+
 
     // ---------------- Review APIs ----------------
     app.post ('/reviews', async (req, res) => {
@@ -345,6 +438,14 @@ async function run () {
     });
 
     // ---------------- Orders APIs ----------------
+
+    // Example backend route
+app.get("/orders", async (req, res) => {
+  const orders = await orderCollection.find().toArray();
+  res.send(orders);
+});
+
+
     app.post ('/orders', async (req, res) => {
       try {
         const result = await orderCollection.insertOne (req.body);
@@ -357,6 +458,46 @@ async function run () {
       }
     });
 
+    // Get all orders for a chef
+app.get("/orders/chef/:chefId", async (req, res) => {
+  const chefId = req.params.chefId;
+
+  try {
+    const orders = await ordersCollection
+      .find({ chefId })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.status(200).json(orders);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+// Update order status
+app.patch("/orders/:id/status", async (req, res) => {
+  const orderId = req.params.id;
+  const { status } = req.body;
+
+  try {
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { orderStatus: status } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).json({ message: "Order status updated" });
+    } else {
+      res.status(404).json({ message: "Order not found" });
+    }
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update status" });
+  }
+});
+
+
+    
     app.get ('/orders/user/:email', async (req, res) => {
       try {
         const orders = await orderCollection
@@ -384,72 +525,68 @@ async function run () {
 
     // ---------------- Requests APIs ----------------
 
-    app.post ('/requests', verifyJWT, async (req, res) => {
-      const request = req.body; // {userName, userEmail, requestType: "chef", requestStatus: "pending", requestTime}
-      try {
-        const result = await requestsCollection.insertOne (request);
-        res.send ({success: true, insertedId: result.insertedId});
-      } catch (err) {
-        console.error (err);
-        res.status (500).send ({success: false, error: err.message});
-      }
-    });
+    app.post("/chef-requests", async (req, res) => {
+  const { userEmail, userName } = req.body;
+
+  const exists = await requestsCollection.findOne({ userEmail });
+
+  if (exists) {
+    return res.send({ alreadyRequested: true });
+  }
+
+  await requestsCollection.insertOne({
+    userEmail,
+    userName,
+    status: "pending",
+    createdAt: new Date(),
+  });
+
+  res.send({ success: true });
+});
+
 
     // Admin fetch all requests
-    app.get ('/requests', verifyJWT, verifyRole ('admin'), async (req, res) => {
-      try {
-        const requests = await requestsCollection.find ().toArray ();
-        res.send (requests);
-      } catch (err) {
-        console.error (err);
-        res.status (500).send ({success: false, error: err.message});
-      }
-    });
+    app.get("/chef-requests", async (req, res) => {
+  const requests = await requestsCollection
+    .find({ status: "pending" })
+    .toArray();
 
-    
-    app.patch (
-      '/requests/:id',
-      verifyJWT,
-      verifyRole ('admin'),
-      async (req, res) => {
-        const id = req.params.id;
-        const {action} = req.body; 
+  res.send(requests);
+});
 
-        try {
-          const request = await requestsCollection.findOne ({
-            _id: new ObjectId (id),
-          });
-          if (!request)
-            return res.status (404).send ({message: 'Request not found'});
 
-          
-          await requestCollection.updateOne (
-            {_id: new ObjectId (id)},
-            {$set: {requestStatus: action}}
-          );
+    app.patch("/chef-requests/:id", async (req, res) => {
+  const { id } = req.params;
+  const { action, userEmail } = req.body;
 
-          if (action === 'approved' && request.requestType === 'chef') {
-            let chefId;
-            do {
-              chefId = `chef-${Math.floor (1000 + Math.random () * 9000)}`;
-            } while (await usersCollection.findOne ({chefId}));
-            await usersCollection.updateOne (
-              {email: request.userEmail},
-              {$set: {role: 'chef', chefId}}
-            );
+  if (action === "approved") {
+    // Generate unique chefId
+    let chefId;
+    do {
+      chefId = `chef-${Math.floor(1000 + Math.random() * 9000)}`;
+    } while (await usersCollection.findOne({ chefId }));
 
-            console.log (
-              `User ${request.userEmail} is now a chef with ID ${chefId}`
-            );
-          }
-
-          res.send ({success: true, action});
-        } catch (err) {
-          console.error (err);
-          res.status (500).send ({success: false, error: err.message});
-        }
+    // Update user role
+    await usersCollection.updateOne(
+      { email: userEmail },
+      {
+        $set: {
+          role: "chef",
+          chefId,
+        },
       }
     );
+
+    // Update request status
+    await requestsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: "approved" } }
+    );
+
+    res.send({ success: true, chefId });
+  }
+});
+
 
     // ---------------- Default Route ----------------
     app.get ('/', (req, res) => {
