@@ -132,7 +132,7 @@ async function run () {
       res.send (user);
     });
 
-    app.patch(
+app.patch(
   "/users/update-role",
   verifyJWT,
   verifyRole("admin"),
@@ -141,36 +141,50 @@ async function run () {
       const { email, role, chefId } = req.body;
 
       if (!email || !role) {
-        return res.status(400).send({ message: "Email and role required" });
+        return res.status(400).send({
+          success: false,
+          message: "Email and role are required",
+        });
       }
 
       const updateDoc = {
-        $set: { role },
+        $set: {
+          role: role,
+        },
       };
 
-      if (role === "chef" && chefId) {
-        updateDoc.$set.chefId = chefId;
+      if (role === "chef") {
+        updateDoc.$set.chefId = chefId || null;
+      } else {
+        updateDoc.$unset = { chefId: "" };
       }
 
       const result = await usersCollection.updateOne(
-        { email },
+        { email: email },
         updateDoc
       );
 
       if (result.matchedCount === 0) {
-        return res.status(404).send({ message: "User not found" });
+        return res.status(404).send({
+          success: false,
+          message: "User not found",
+        });
       }
 
       res.send({
         success: true,
-        message: "User role updated successfully",
+        message: `User role updated to ${role}`,
       });
-    } catch (err) {
-      console.error(err);
-      res.status(500).send({ message: "Failed to update role" });
+    } catch (error) {
+      console.error("Update role error:", error);
+      res.status(500).send({
+        success: false,
+        message: "Internal server error",
+      });
     }
   }
 );
+
 
 
     
@@ -585,7 +599,6 @@ app.post("/orders", async (req, res) => {
       }
     });
 
-    // Update order status
     app.patch ('/orders/:id/status',verifyJWT,verifyRole('chef'), async (req, res) => {
       const orderId = req.params.id;
       const {status} = req.body;
@@ -640,13 +653,12 @@ app.post("/orders", async (req, res) => {
 
     
 app.post('/create-payment-intent', async (req, res) => {
-  const { amount } = req.body; // in cents
+  const { amount } = req.body; 
   const paymentIntent = await stripe.paymentIntents.create({
-    amount: amount * 100, // Stripe expects cents
+    amount: amount * 100, 
     currency: 'usd',
     payment_method_types: ['card'],
   });
-
   res.send({ clientSecret: paymentIntent.client_secret });
 });
 
