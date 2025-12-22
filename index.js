@@ -170,23 +170,57 @@ async function run() {
     });
 
     app.patch("/users/update-role", verifyJWT, verifyRole("admin"), async (req, res) => {
-      try {
-        const { email, role, chefId } = req.body;
-        if (!email || !role) return res.status(400).send({ success: false, message: "Email and role required" });
+  try {
+    const { email, role, chefId } = req.body;
 
-        const updateDoc = { $set: { role } };
-        if (role === "chef") updateDoc.$set.chefId = chefId || null;
-        else updateDoc.$unset = { chefId: "" };
+    if (!email || !role) {
+      return res.status(400).send({ message: "Email and role are required" });
+    }
 
-        const result = await usersCollection.updateOne({ email }, updateDoc);
-        if (result.matchedCount === 0) return res.status(404).send({ success: false, message: "User not found" });
+    let updateDoc = {};
 
-        res.send({ success: true, message: `User role updated to ${role}` });
-      } catch (error) {
-        console.error(error);
-        res.status(500).send({ success: false, message: "Internal server error" });
-      }
+    if (role === "admin") {
+      updateDoc = {
+        $set: { role: "admin" },
+        $unset: { chefId: "" },
+      };
+    }
+
+    else if (role === "chef") {
+      updateDoc = {
+        $set: {
+          role: "chef",
+          chefId: chefId || `CHEF-${Date.now()}`,
+        },
+      };
+    }
+
+    else {
+      updateDoc = {
+        $set: { role },
+        $unset: { chefId: "" },
+      };
+    }
+
+    const result = await usersCollection.updateOne(
+      { email },
+      updateDoc
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    res.send({
+      success: true,
+      message: `User role updated to ${role}`,
     });
+  } catch (error) {
+    console.error("Update role error:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
 
     // ---------------- Meals APIs ----------------
     app.post("/meals", verifyJWT, verifyRole("chef"), async (req, res) => {
@@ -331,33 +365,40 @@ app.get("/admin/requests", verifyJWT, verifyRole("admin"), async (req, res) => {
 });
 
  app.post("/chef-requests", async (req, res) => {
-      try {
-        const { userEmail, userName, requestedRole } = req.body;
+  try {
+    const { userEmail, userName, requestedRole } = req.body;
 
-        if (!userEmail || !requestedRole) {
-          return res.status(400).send({ message: "Missing required fields" });
-        }
+    if (!userEmail || !requestedRole) {
+      return res.status(400).send({ message: "Missing required fields" });
+    }
 
-        const exists = await requestsCollection.findOne({ userEmail });
-
-        if (exists) {
-          return res.send({ alreadyRequested: true });
-        }
-
-        await requestsCollection.insertOne({
-          userEmail,
-          userName,
-          requestType: requestedRole, // ✅ chef / admin
-          requestStatus: "pending",
-          createdAt: new Date(),
-        });
-
-        res.send({ success: true });
-      } catch (err) {
-        console.error(err);
-        res.status(500).send({ message: "Failed to send request" });
-      }
+    const exists = await requestsCollection.findOne({
+      userEmail,
+      requestType: requestedRole,
     });
+
+    if (exists) {
+      return res.send({
+        alreadyRequested: true,
+        message: `Already requested for ${requestedRole}`,
+      });
+    }
+
+    await requestsCollection.insertOne({
+      userEmail,
+      userName,
+      requestType: requestedRole, 
+      requestStatus: "pending",
+      createdAt: new Date(),
+    });
+
+    res.send({ success: true });
+  } catch (err) {
+    console.error("Request error:", err);
+    res.status(500).send({ message: "Failed to send request" });
+  }
+});
+
 
     // Admin fetch all requests
     app.get("/chef-requests", async (req, res) => {
