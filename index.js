@@ -255,30 +255,44 @@ async function run() {
     });
 
     app.get("/meals", async (req, res) => {
-      const {
-        page = 1,
-        limit = 10,
-        search = "",
-        category = "All",
-        sort = "",
-      } = req.query;
-      let query = {};
-      if (search) query.mealName = { $regex: search, $options: "i" };
-      if (category !== "All") query.foodCategory = category;
+      try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const search = req.query.search || "";
+        const category = req.query.category || "All";
+        const sortOrder = req.query.sort || ""; // "asc" or "desc"
 
-      let sortOption = {};
-      if (sort === "asc") sortOption.foodPrice = 1;
-      else if (sort === "desc") sortOption.foodPrice = -1;
+        const query = {};
 
-      const skip = (parseInt(page) - 1) * parseInt(limit);
-      const meals = await mealsCollection
-        .find(query)
-        .sort(sortOption)
-        .skip(skip)
-        .limit(parseInt(limit))
-        .toArray();
-      const total = await mealsCollection.countDocuments(query);
-      res.send({ meals, total });
+        // Search by meal name
+        if (search) {
+          query.foodName = { $regex: search, $options: "i" }; // <-- make sure field name matches DB
+        }
+
+        // Filter by category
+        if (category && category !== "All") {
+          query.foodCategory = category;
+        }
+
+        // Total count for pagination
+        const total = await mealsCollection.countDocuments(query);
+
+        // Sorting
+        let cursor = mealsCollection.find(query);
+        if (sortOrder === "asc") cursor = cursor.sort({ price: 1 });
+        else if (sortOrder === "desc") cursor = cursor.sort({ price: -1 });
+
+        // Pagination
+        const meals = await cursor
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .toArray();
+
+        res.status(200).json({ meals, total });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to fetch meals" });
+      }
     });
 
     app.get("/meals/:id", async (req, res) => {
@@ -351,6 +365,20 @@ async function run() {
 
     // ________________________Reviews__________________________
 
+    app.get("/reviews", async (req, res) => {
+      try {
+        const reviews = await reviewCollection
+          .find()
+          .sort({ date: -1 })
+          .toArray();
+
+        res.status(200).json(reviews);
+      } catch (err) {
+        console.error("Failed to fetch reviews:", err);
+        res.status(500).json({ message: "Failed to fetch reviews" });
+      }
+    });
+
     // POST a new review
     app.post("/reviews", verifyJWT, async (req, res) => {
       try {
@@ -364,6 +392,51 @@ async function run() {
       } catch (err) {
         console.error("Failed to add review:", err);
         res.status(500).json({ message: "Failed to add review" });
+      }
+    });
+
+    // GET /reviews/:mealId
+    app.get("/reviews/:mealId", async (req, res) => {
+      try {
+        const mealId = req.params.mealId;
+
+        if (!mealId) {
+          return res.status(400).json({ message: "Meal ID is required" });
+        }
+
+        const reviews = await reviewCollection
+          .find({ foodId: mealId })
+          .sort({ date: -1 }) // latest first
+          .toArray();
+
+        res.status(200).json(reviews);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to fetch reviews" });
+      }
+    });
+
+    // DELETE a review by ID
+    app.delete("/reviews/:id", async (req, res) => {
+      try {
+        const reviewId = req.params.id;
+
+        if (!reviewId) {
+          return res.status(400).json({ message: "Review ID is required" });
+        }
+
+        const result = await reviewCollection.deleteOne({
+          _id: new ObjectId(reviewId),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).json({ message: "Review not found" });
+        }
+
+        res.status(200).json({ message: "Review deleted successfully" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to delete review" });
       }
     });
 
@@ -384,27 +457,109 @@ async function run() {
       }
     });
 
-    // _______________________Favorites__________________
-    // Fetch all favorites for a user
-    app.get("/favorites/:email", verifyJWT, async (req, res) => {
-      const email = req.params.email;
-
-      // Only allow user to fetch their own favorites
-      if (email !== req.email && req.role !== "admin") {
-        return res.status(403).send({ message: "Access denied" });
-      }
-
+    // PATCH /reviews/:id → update a review
+    app.patch("/reviews/:id", async (req, res) => {
       try {
-        const favorites = await favoritesCollection
-          .find({ userEmail: email })
-          .toArray();
+        const reviewId = req.params.id;
+        const updateData = req.body; // e.g., { comment: "...", rating: 4 }
 
-        res.json(favorites);
+        if (!reviewId) {
+          return res.status(400).json({ message: "Review ID is required" });
+        }
+
+        const result = await reviewCollection.updateOne(
+          { _id: new ObjectId(reviewId) },
+          { $set: updateData }
+        );
+
+        if (result.matchedCount === 0) {
+          return res.status(404).json({ message: "Review not found" });
+        }
+
+        res.status(200).json({ message: "Review updated successfully" });
       } catch (err) {
         console.error(err);
-        res.status(500).send({ message: "Failed to fetch favorites" });
+        res.status(500).json({ message: "Failed to update review" });
       }
     });
+
+    // _______________________Favorites__________________
+    // Fetch all favorites for a user
+app.get("/favorites/:email", verifyJWT, async (req, res) => {
+  try {
+    const email = req.params.email;
+    const favorites = await favoritesCollection.find({ userEmail: email }).toArray();
+    res.status(200).json(favorites);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch favorites" });
+  }
+});
+
+// DELETE a favorite meal
+app.delete("/favorites/:id", verifyJWT, async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ message: "Favorite ID required" });
+
+    const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0)
+      return res.status(404).json({ message: "Favorite not found" });
+
+    res.status(200).json({ success: true, message: "Favorite removed" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Failed to remove favorite" });
+  }
+});
+
+    // POST /favorites
+    app.post("/favorites", async (req, res) => {
+      try {
+        const {
+          userEmail,
+          mealId,
+          mealName,
+          chefId,
+          chefName,
+          price,
+          foodImage,
+          createdAt,
+        } = req.body;
+
+        // Validate required fields
+        if (!userEmail || !mealId) {
+          return res
+            .status(400)
+            .json({ message: "userEmail and mealId are required" });
+        }
+
+        // Check if the meal is already favorited by the user
+        const exists = await favoritesCollection.findOne({ userEmail, mealId });
+        if (exists) {
+          return res.status(400).json({ message: "Meal already in favorites" });
+        }
+
+        // Insert favorite
+        const result = await favoritesCollection.insertOne({
+          userEmail,
+          mealId,
+          mealName,
+          chefId,
+          chefName,
+          price,
+          foodImage,
+          createdAt: createdAt || new Date(),
+        });
+
+        res.status(201).json({ success: true, insertedId: result.insertedId });
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to add favorite" });
+      }
+    });
+    
 
     // Only admin can fetch all requests
     app.get(
