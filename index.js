@@ -12,7 +12,9 @@ const secret = process.env.JWT_SECRET;
 const isProduction = process.env.NODE_ENV === "production";
 
 // Firebase initialization
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString("utf-8");
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+  "utf-8"
+);
 const serviceAccount = JSON.parse(decoded);
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount),
@@ -21,8 +23,10 @@ admin.initializeApp({
 const app = express();
 
 // ---------------- CORS ----------------
-// ---------------- CORS ----------------
-const allowedOrigins = ["http://localhost:5173", "https://chef-bazar.vercel.app"];
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://chef-bazar.vercel.app",
+];
 
 app.use(
   cors({
@@ -35,12 +39,11 @@ app.use(
   })
 );
 
-// ✅ Handle preflight globally (fixed version)
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, PUT");
     res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    return res.sendStatus(204); // No Content
+    return res.sendStatus(204);
   }
   next();
 });
@@ -53,7 +56,8 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
 
 // ---------------- JWT Verification ----------------
 const verifyJWT = (req, res, next) => {
-  const token = req.cookies?.accessToken || req.headers["authorization"]?.split(" ")[1];
+  const token =
+    req.cookies?.accessToken || req.headers["authorization"]?.split(" ")[1];
   if (!token) return res.status(401).send({ message: "Unauthorized" });
 
   jwt.verify(token, secret, (err, decoded) => {
@@ -66,15 +70,37 @@ const verifyJWT = (req, res, next) => {
 
 // ---------------- Role Check Middleware ----------------
 const verifyRole = (requiredRoles) => (req, res, next) => {
-  const rolesArray = Array.isArray(requiredRoles) ? requiredRoles : [requiredRoles];
-  if (!req.role || !rolesArray.includes(req.role)) return res.status(403).send({ message: "Access Denied: Insufficient role" });
+  const rolesArray = Array.isArray(requiredRoles)
+    ? requiredRoles
+    : [requiredRoles];
+  if (!req.role || !rolesArray.includes(req.role))
+    return res
+      .status(403)
+      .send({ message: "Access Denied: Insufficient role" });
   next();
 };
 
 // ---------------- MongoDB Client ----------------
 const client = new MongoClient(process.env.MONGODB_URI, {
-  serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
+  serverApi: {
+    version: ServerApiVersion.v1,
+    strict: true,
+    deprecationErrors: true,
+  },
 });
+
+const generateChefId = async () => {
+  let chefId;
+  let exists = true;
+
+  while (exists) {
+    chefId = `chef-${Math.floor(1000 + Math.random() * 9000)}`;
+    const user = await usersCollection.findOne({ chefId });
+    if (!user) exists = false;
+  }
+
+  return chefId;
+};
 
 let usersCollection, mealsCollection, reviewCollection, favoritesCollection;
 let orderCollection, requestsCollection, paymentHistoryCollection;
@@ -115,7 +141,8 @@ async function run() {
     app.post("/jwt", async (req, res) => {
       try {
         const { email, displayName } = req.body;
-        if (!email) return res.status(400).send({ message: "Email is required" });
+        if (!email)
+          return res.status(400).send({ message: "Email is required" });
 
         let user = await usersCollection.findOne({ email });
 
@@ -130,7 +157,9 @@ async function run() {
           user = { _id: result.insertedId, ...newUser };
         }
 
-        const token = jwt.sign({ email: user.email, role: user.role }, secret, { expiresIn: "30d" });
+        const token = jwt.sign({ email: user.email, role: user.role }, secret, {
+          expiresIn: "30d",
+        });
 
         res.cookie("accessToken", token, {
           httpOnly: true,
@@ -142,12 +171,18 @@ async function run() {
         res.status(200).send({ success: true, role: user.role });
       } catch (error) {
         console.error("JWT ERROR:", error);
-        res.status(500).send({ success: false, message: "Failed to generate token" });
+        res
+          .status(500)
+          .send({ success: false, message: "Failed to generate token" });
       }
     });
 
     app.post("/logout", (req, res) => {
-      res.clearCookie("accessToken", { httpOnly: true, secure: isProduction, sameSite: isProduction ? "none" : "strict" });
+      res.clearCookie("accessToken", {
+        httpOnly: true,
+        secure: isProduction,
+        sameSite: isProduction ? "none" : "strict",
+      });
       res.send({ success: true });
     });
 
@@ -159,7 +194,8 @@ async function run() {
     app.get("/users/:email", verifyJWT, async (req, res) => {
       try {
         const email = req.params.email;
-        if (req.role !== "admin" && req.email !== email) return res.status(403).send({ message: "Access denied" });
+        if (req.role !== "admin" && req.email !== email)
+          return res.status(403).send({ message: "Access denied" });
         const user = await usersCollection.findOne({ email });
         if (!user) return res.status(404).send({ message: "User not found" });
         res.send(user);
@@ -169,58 +205,47 @@ async function run() {
       }
     });
 
-    app.patch("/users/update-role", verifyJWT, verifyRole("admin"), async (req, res) => {
-  try {
-    const { email, role, chefId } = req.body;
+    app.patch(
+      "/users/update-role",
+      verifyJWT,
+      verifyRole("admin"),
+      async (req, res) => {
+        try {
+          const { email, role } = req.body;
 
-    if (!email || !role) {
-      return res.status(400).send({ message: "Email and role are required" });
-    }
+          if (!email || !role) {
+            return res.status(400).send({ message: "Email & role required" });
+          }
 
-    let updateDoc = {};
+          const updateDoc = { $set: { role } };
 
-    if (role === "admin") {
-      updateDoc = {
-        $set: { role: "admin" },
-        $unset: { chefId: "" },
-      };
-    }
+          // ✅ user → chef
+          if (role === "chef") {
+            const chefId = await generateChefId();
+            updateDoc.$set.chefId = chefId;
+          }
 
-    else if (role === "chef") {
-      updateDoc = {
-        $set: {
-          role: "chef",
-          chefId: chefId || `CHEF-${Date.now()}`,
-        },
-      };
-    }
+          // ✅ chef → admin (chefId remove)
+          if (role === "admin") {
+            updateDoc.$unset = { chefId: "" };
+          }
 
-    else {
-      updateDoc = {
-        $set: { role },
-        $unset: { chefId: "" },
-      };
-    }
+          const result = await usersCollection.updateOne({ email }, updateDoc);
 
-    const result = await usersCollection.updateOne(
-      { email },
-      updateDoc
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "User not found" });
+          }
+
+          res.send({
+            success: true,
+            message: `Role updated to ${role}`,
+          });
+        } catch (error) {
+          console.error("Role update error:", error);
+          res.status(500).send({ message: "Internal server error" });
+        }
+      }
     );
-
-    if (result.matchedCount === 0) {
-      return res.status(404).send({ message: "User not found" });
-    }
-
-    res.send({
-      success: true,
-      message: `User role updated to ${role}`,
-    });
-  } catch (error) {
-    console.error("Update role error:", error);
-    res.status(500).send({ message: "Internal server error" });
-  }
-});
-
 
     // ---------------- Meals APIs ----------------
     app.post("/meals", verifyJWT, verifyRole("chef"), async (req, res) => {
@@ -230,7 +255,13 @@ async function run() {
     });
 
     app.get("/meals", async (req, res) => {
-      const { page = 1, limit = 10, search = "", category = "All", sort = "" } = req.query;
+      const {
+        page = 1,
+        limit = 10,
+        search = "",
+        category = "All",
+        sort = "",
+      } = req.query;
       let query = {};
       if (search) query.mealName = { $regex: search, $options: "i" };
       if (category !== "All") query.foodCategory = category;
@@ -240,14 +271,21 @@ async function run() {
       else if (sort === "desc") sortOption.foodPrice = -1;
 
       const skip = (parseInt(page) - 1) * parseInt(limit);
-      const meals = await mealsCollection.find(query).sort(sortOption).skip(skip).limit(parseInt(limit)).toArray();
+      const meals = await mealsCollection
+        .find(query)
+        .sort(sortOption)
+        .skip(skip)
+        .limit(parseInt(limit))
+        .toArray();
       const total = await mealsCollection.countDocuments(query);
       res.send({ meals, total });
     });
 
     app.get("/meals/:id", async (req, res) => {
       try {
-        const meal = await mealsCollection.findOne({ _id: new ObjectId(req.params.id) });
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(req.params.id),
+        });
         res.send(meal);
       } catch (err) {
         console.error(err);
@@ -260,7 +298,9 @@ async function run() {
       try {
         const orderData = { ...req.body, userEmail: req.email };
         const result = await orderCollection.insertOne(orderData);
-        res.status(201).send({ message: "Order placed", orderId: result.insertedId });
+        res
+          .status(201)
+          .send({ message: "Order placed", orderId: result.insertedId });
       } catch (err) {
         console.error(err);
         res.status(500).send({ error: "Server Error" });
@@ -268,8 +308,11 @@ async function run() {
     });
 
     app.get("/orders/user/:email", verifyJWT, async (req, res) => {
-      if (req.email !== req.params.email && req.role !== "admin") return res.status(403).send({ message: "Access denied" });
-      const orders = await orderCollection.find({ userEmail: req.params.email }).toArray();
+      if (req.email !== req.params.email && req.role !== "admin")
+        return res.status(403).send({ message: "Access denied" });
+      const orders = await orderCollection
+        .find({ userEmail: req.params.email })
+        .toArray();
       res.send(orders);
     });
 
@@ -288,9 +331,13 @@ async function run() {
       const { id } = req.params;
       const { paymentInfo } = req.body;
       const order = await orderCollection.findOne({ _id: new ObjectId(id) });
-      if (!order || order.userEmail !== req.email) return res.status(403).send({ message: "Access denied" });
+      if (!order || order.userEmail !== req.email)
+        return res.status(403).send({ message: "Access denied" });
 
-      await orderCollection.updateOne({ _id: new ObjectId(id) }, { $set: { paymentStatus: "paid", paymentInfo } });
+      await orderCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { paymentStatus: "paid", paymentInfo } }
+      );
       await paymentHistoryCollection.insertOne({
         orderId: id,
         userEmail: order.userEmail,
@@ -302,103 +349,113 @@ async function run() {
       res.send({ success: true });
     });
 
-    // ________________________Reviews__________________________ 
+    // ________________________Reviews__________________________
 
     // POST a new review
-app.post("/reviews", verifyJWT, async (req, res) => {
-  try {
-    const reviewData = { ...req.body, userEmail: req.email, date: new Date() };
-    const result = await reviewCollection.insertOne(reviewData);
-    res.status(201).json({ insertedId: result.insertedId });
-  } catch (err) {
-    console.error("Failed to add review:", err);
-    res.status(500).json({ message: "Failed to add review" });
-  }
-});
-
+    app.post("/reviews", verifyJWT, async (req, res) => {
+      try {
+        const reviewData = {
+          ...req.body,
+          userEmail: req.email,
+          date: new Date(),
+        };
+        const result = await reviewCollection.insertOne(reviewData);
+        res.status(201).json({ insertedId: result.insertedId });
+      } catch (err) {
+        console.error("Failed to add review:", err);
+        res.status(500).json({ message: "Failed to add review" });
+      }
+    });
 
     app.get("/reviews/user/:email", verifyJWT, async (req, res) => {
-  const email = req.params.email;
-  if (email !== req.email && req.role !== "admin") {
-    return res.status(403).send({ message: "Access denied" });
-  }
-  try {
-    const userReviews = await reviewCollection.find({ userEmail: email }).sort({ date: -1 }).toArray();
-    res.json(userReviews);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to fetch user reviews" });
-  }
-});
-
-// _______________________Favorites__________________
-// Fetch all favorites for a user
-app.get("/favorites/:email", verifyJWT, async (req, res) => {
-  const email = req.params.email;
-
-  // Only allow user to fetch their own favorites
-  if (email !== req.email && req.role !== "admin") {
-    return res.status(403).send({ message: "Access denied" });
-  }
-
-  try {
-    const favorites = await favoritesCollection
-      .find({ userEmail: email })
-      .toArray();
-
-    res.json(favorites);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to fetch favorites" });
-  }
-});
-
-// Only admin can fetch all requests
-app.get("/admin/requests", verifyJWT, verifyRole("admin"), async (req, res) => {
-  try {
-    const requests = await requestsCollection.find().toArray();
-    res.status(200).json(requests);
-  } catch (err) {
-    console.error("Failed to fetch requests:", err);
-    res.status(500).json({ message: "Failed to fetch requests" });
-  }
-});
-
- app.post("/chef-requests", async (req, res) => {
-  try {
-    const { userEmail, userName, requestedRole } = req.body;
-
-    if (!userEmail || !requestedRole) {
-      return res.status(400).send({ message: "Missing required fields" });
-    }
-
-    const exists = await requestsCollection.findOne({
-      userEmail,
-      requestType: requestedRole,
+      const email = req.params.email;
+      if (email !== req.email && req.role !== "admin") {
+        return res.status(403).send({ message: "Access denied" });
+      }
+      try {
+        const userReviews = await reviewCollection
+          .find({ userEmail: email })
+          .sort({ date: -1 })
+          .toArray();
+        res.json(userReviews);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Failed to fetch user reviews" });
+      }
     });
 
-    if (exists) {
-      return res.send({
-        alreadyRequested: true,
-        message: `Already requested for ${requestedRole}`,
-      });
-    }
+    // _______________________Favorites__________________
+    // Fetch all favorites for a user
+    app.get("/favorites/:email", verifyJWT, async (req, res) => {
+      const email = req.params.email;
 
-    await requestsCollection.insertOne({
-      userEmail,
-      userName,
-      requestType: requestedRole, 
-      requestStatus: "pending",
-      createdAt: new Date(),
+      // Only allow user to fetch their own favorites
+      if (email !== req.email && req.role !== "admin") {
+        return res.status(403).send({ message: "Access denied" });
+      }
+
+      try {
+        const favorites = await favoritesCollection
+          .find({ userEmail: email })
+          .toArray();
+
+        res.json(favorites);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch favorites" });
+      }
     });
 
-    res.send({ success: true });
-  } catch (err) {
-    console.error("Request error:", err);
-    res.status(500).send({ message: "Failed to send request" });
-  }
-});
+    // Only admin can fetch all requests
+    app.get(
+      "/admin/requests",
+      verifyJWT,
+      verifyRole("admin"),
+      async (req, res) => {
+        try {
+          const requests = await requestsCollection.find().toArray();
+          res.status(200).json(requests);
+        } catch (err) {
+          console.error("Failed to fetch requests:", err);
+          res.status(500).json({ message: "Failed to fetch requests" });
+        }
+      }
+    );
 
+    app.post("/chef-requests", async (req, res) => {
+      try {
+        const { userEmail, userName, requestedRole } = req.body;
+
+        if (!userEmail || !requestedRole) {
+          return res.status(400).send({ message: "Missing required fields" });
+        }
+
+        const exists = await requestsCollection.findOne({
+          userEmail,
+          requestType: requestedRole,
+        });
+
+        if (exists) {
+          return res.send({
+            alreadyRequested: true,
+            message: `Already requested for ${requestedRole}`,
+          });
+        }
+
+        await requestsCollection.insertOne({
+          userEmail,
+          userName,
+          requestType: requestedRole,
+          requestStatus: "pending",
+          createdAt: new Date(),
+        });
+
+        res.send({ success: true });
+      } catch (err) {
+        console.error("Request error:", err);
+        res.status(500).send({ message: "Failed to send request" });
+      }
+    });
 
     // Admin fetch all requests
     app.get("/chef-requests", async (req, res) => {
@@ -583,9 +640,6 @@ app.get("/admin/requests", verifyJWT, verifyRole("admin"), async (req, res) => {
       );
       res.send({ success: true });
     });
-
-
-
 
     // ---------------- Default ----------------
     app.get("/", (req, res) => res.send("Hello from Server!"));
