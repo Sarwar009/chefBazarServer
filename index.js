@@ -11,6 +11,8 @@ const port = process.env.PORT || 3000;
 const secret = process.env.JWT_SECRET;
 const isProduction = process.env.NODE_ENV === "production";
 
+
+
 // Firebase initialization
 const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
   "utf-8"
@@ -22,19 +24,26 @@ admin.initializeApp({
 
 const app = express();
 
-// ---------------- CORS ----------------
-const allowedOrigins = [
-  "https://chef-bazar.vercel.app",
-];
-
 app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true); // server-to-server or Postman
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
-  },
+  origin: true,
   credentials: true,
 }));
+
+// ---------------- CORS ----------------
+// const allowedOrigins = [
+//   "http://localhost:5173",
+//   "https://chef-bazar.vercel.app",
+  
+// ];
+
+// app.use(cors({
+//   origin: (origin, callback) => {
+//     if (!origin) return callback(null, true); // server-to-server or Postman
+//     if (allowedOrigins.includes(origin)) return callback(null, true);
+//     return callback(new Error(`CORS blocked for origin: ${origin}`));
+//   },
+//   credentials: true,
+// }));
 
 
 app.use((req, res, next) => {
@@ -189,31 +198,17 @@ async function run() {
       res.send(users);
     });
 
-    app.get("/users/:email", verifyJWT, async (req, res) => {
-      try {
-        const email = req.params.email; // requested email
-        console.log("Requested email:", email);
-        console.log("JWT email:", req.email, "Role:", req.role);
+    app.get('/users/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+    const user = await usersCollection.findOne({ email });
+    res.send(user || {});
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
 
-        // Check access: admin can fetch any user, else user can fetch only self
-        if (!req.role)
-          return res.status(403).send({ message: "Role missing in token" });
-        if (req.role !== "admin" && req.email !== email) {
-          return res.status(403).send({ message: "Access denied" });
-        }
-
-        // Fetch user from MongoDB
-        const user = await usersCollection.findOne({ email });
-        if (!user) {
-          return res.status(404).send({ message: "User not found" });
-        }
-
-        res.status(200).send(user);
-      } catch (err) {
-        console.error("User fetch error:", err);
-        res.status(500).send({ message: "Internal server error" });
-      }
-    });
 
     app.patch(
       "/users/update-role",
@@ -567,22 +562,21 @@ async function run() {
     });
 
     // GET /reviews/:mealId
-    app.get("/reviews/:mealId", async (req, res) => {
+
+app.get("/reviews/:mealId", async (req, res) => {
   try {
     const mealId = req.params.mealId;
 
-    if (!mealId) {
-      return res.status(400).json({ message: "Meal ID is required" });
-    }
+    if (!mealId) return res.status(400).json({ message: "Meal ID is required" });
 
     const reviews = await reviewCollection
-      .find({ foodId: mealId })
-      .sort({ date: -1 }) // latest first
+      .find({ foodId: new ObjectId(mealId) })
+      .sort({ date: -1 })
       .toArray();
 
     res.status(200).json(reviews);
   } catch (err) {
-    console.error(err);
+    console.error("Fetch reviews error:", err);
     res.status(500).json({ message: "Failed to fetch reviews" });
   }
 });
