@@ -24,20 +24,18 @@ const app = express();
 
 // ---------------- CORS ----------------
 const allowedOrigins = [
-  "http://localhost:5173",
   "https://chef-bazar.vercel.app",
 ];
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // server-to-server or Postman
-      if (allowedOrigins.includes(origin)) return callback(null, true);
-      return callback(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
-  })
-);
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true); // server-to-server or Postman
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error(`CORS blocked for origin: ${origin}`));
+  },
+  credentials: true,
+}));
+
 
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
@@ -163,8 +161,8 @@ async function run() {
 
         res.cookie("accessToken", token, {
           httpOnly: true,
-          secure: isProduction,
-          sameSite: isProduction ? "none" : "strict",
+          secure: true, // because Vercel is HTTPS
+          sameSite: "none", // cross-site
           maxAge: 30 * 24 * 60 * 60 * 1000,
         });
 
@@ -193,14 +191,26 @@ async function run() {
 
     app.get("/users/:email", verifyJWT, async (req, res) => {
       try {
-        const email = req.params.email;
-        if (req.role !== "admin" && req.email !== email)
+        const email = req.params.email; // requested email
+        console.log("Requested email:", email);
+        console.log("JWT email:", req.email, "Role:", req.role);
+
+        // Check access: admin can fetch any user, else user can fetch only self
+        if (!req.role)
+          return res.status(403).send({ message: "Role missing in token" });
+        if (req.role !== "admin" && req.email !== email) {
           return res.status(403).send({ message: "Access denied" });
+        }
+
+        // Fetch user from MongoDB
         const user = await usersCollection.findOne({ email });
-        if (!user) return res.status(404).send({ message: "User not found" });
-        res.send(user);
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.status(200).send(user);
       } catch (err) {
-        console.error(err);
+        console.error("User fetch error:", err);
         res.status(500).send({ message: "Internal server error" });
       }
     });
@@ -308,105 +318,100 @@ async function run() {
     });
 
     // UPDATE MEAL (Chef only)
-app.patch("/meals/:id", verifyJWT, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const updatedMeal = req.body;
+    app.patch("/meals/:id", verifyJWT, async (req, res) => {
+      try {
+        const { id } = req.params;
+        const updatedMeal = req.body;
 
-    const meal = await mealsCollection.findOne({
-      _id: new ObjectId(id),
-    });
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(id),
+        });
 
-    if (!meal) {
-      return res.status(404).send({ message: "Meal not found" });
-    }
+        if (!meal) {
+          return res.status(404).send({ message: "Meal not found" });
+        }
 
-    
+        // ✅ Admin can update anything
+        if (req.role !== "admin") {
+          // ✅ Chef can update only own meal
+          if (meal.userEmail !== req.email) {
+            return res.status(403).send({ message: "Forbidden" });
+          }
+        }
 
-    // ✅ Admin can update anything
-    if (req.role !== "admin") {
-      // ✅ Chef can update only own meal
-      if (meal.userEmail !== req.email) {
-        return res.status(403).send({ message: "Forbidden" });
+        const result = await mealsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          {
+            $set: {
+              ...updatedMeal,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        res.send({
+          success: true,
+          message: "Meal updated successfully",
+          modifiedCount: result.modifiedCount,
+        });
+      } catch (error) {
+        console.error("Update meal error:", error);
+        res.status(500).send({ message: "Failed to update meal" });
       }
-    }
+    });
 
-    const result = await mealsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      {
-        $set: {
-          ...updatedMeal,
-          updatedAt: new Date(),
-        },
+    app.delete("/meals/:id", verifyJWT, async (req, res) => {
+      try {
+        const { id } = req.params;
+
+        const meal = await mealsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+
+        if (!meal) {
+          return res.status(404).send({ message: "Meal not found" });
+        }
+
+        // ✅ Admin can delete anything
+        if (req.role !== "admin") {
+          // ✅ Chef can delete only own meal
+          if (meal.userEmail !== req.email) {
+            return res.status(403).send({ message: "Forbidden" });
+          }
+        }
+
+        await mealsCollection.deleteOne({ _id: new ObjectId(id) });
+
+        res.send({
+          success: true,
+          message: "Meal deleted successfully",
+        });
+      } catch (error) {
+        console.error("Delete meal error:", error);
+        res.status(500).send({ message: "Failed to delete meal" });
       }
-    );
-
-    res.send({
-      success: true,
-      message: "Meal updated successfully",
-      modifiedCount: result.modifiedCount,
     });
-  } catch (error) {
-    console.error("Update meal error:", error);
-    res.status(500).send({ message: "Failed to update meal" });
-  }
-});
-
-app.delete("/meals/:id", verifyJWT, async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const meal = await mealsCollection.findOne({
-      _id: new ObjectId(id),
-    });
-
-    if (!meal) {
-      return res.status(404).send({ message: "Meal not found" });
-    }
-
-    // ✅ Admin can delete anything
-    if (req.role !== "admin") {
-      // ✅ Chef can delete only own meal
-      if (meal.userEmail !== req.email) {
-        return res.status(403).send({ message: "Forbidden" });
-      }
-    }
-
-    await mealsCollection.deleteOne({ _id: new ObjectId(id) });
-
-    res.send({
-      success: true,
-      message: "Meal deleted successfully",
-    });
-  } catch (error) {
-    console.error("Delete meal error:", error);
-    res.status(500).send({ message: "Failed to delete meal" });
-  }
-});
-
-
 
     // Get meals by chefId
-app.get("/meals/chef/:chefId", async (req, res) => {
-  try {
-    const { chefId } = req.params;
+    app.get("/meals/chef/:chefId", async (req, res) => {
+      try {
+        const { chefId } = req.params;
 
-    if (!chefId) {
-      return res.status(400).json({ message: "ChefId is required" });
-    }
+        if (!chefId) {
+          return res.status(400).json({ message: "ChefId is required" });
+        }
 
-    const meals = await mealsCollection
-      .find({ chefId })
-      .sort({ createdAt: -1 })
-      .toArray();
+        const meals = await mealsCollection
+          .find({ chefId })
+          .sort({ createdAt: -1 })
+          .toArray();
 
-    res.status(200).json(meals);
-  } catch (err) {
-    console.error("Failed to fetch chef meals:", err);
-    res.status(500).json({ message: "Failed to fetch meals" });
-  }
-});
-
+        res.status(200).json(meals);
+      } catch (err) {
+        console.error("Failed to fetch chef meals:", err);
+        res.status(500).json({ message: "Failed to fetch meals" });
+      }
+    });
 
     // ---------------- Orders APIs ----------------
     app.post("/orders", verifyJWT, async (req, res) => {
@@ -432,66 +437,69 @@ app.get("/meals/chef/:chefId", async (req, res) => {
     });
 
     // ================= CHEF ORDERS =================
-app.get("/orders/chef/:chefId", verifyJWT, verifyRole("chef"), async (req, res) => {
-  try {
-    const chefId = req.params.chefId;
+    app.get(
+      "/orders/chef/:chefId",
+      verifyJWT,
+      verifyRole("chef"),
+      async (req, res) => {
+        try {
+          const chefId = req.params.chefId;
 
-    if (!chefId) {
-      return res.status(400).send({ message: "ChefId required" });
-    }
+          if (!chefId) {
+            return res.status(400).send({ message: "ChefId required" });
+          }
 
-    const orders = await orderCollection
-      .find({ chefId })
-      .sort({ orderTime: -1 })
-      .toArray();
+          const orders = await orderCollection
+            .find({ chefId })
+            .sort({ orderTime: -1 })
+            .toArray();
 
-    res.send(orders);
-  } catch (error) {
-    console.error("Chef orders error:", error);
-    res.status(500).send({ message: "Failed to fetch chef orders" });
-  }
-});
-
-// ================= UPDATE ORDER STATUS (CHEF) =================
-app.patch(
-  "/orders/:id/status",
-  verifyJWT,
-  verifyRole("chef"),
-  async (req, res) => {
-    try {
-      const { id } = req.params;
-      const { status } = req.body;
-
-      if (!status) {
-        return res.status(400).send({ message: "Status is required" });
-      }
-
-      const result = await orderCollection.updateOne(
-        { _id: new ObjectId(id) },
-        {
-          $set: {
-            orderStatus: status,
-            updatedAt: new Date(),
-          },
+          res.send(orders);
+        } catch (error) {
+          console.error("Chef orders error:", error);
+          res.status(500).send({ message: "Failed to fetch chef orders" });
         }
-      );
-
-      if (result.matchedCount === 0) {
-        return res.status(404).send({ message: "Order not found" });
       }
+    );
 
-      res.send({
-        success: true,
-        message: "Order status updated",
-      });
-    } catch (error) {
-      console.error("Order status update error:", error);
-      res.status(500).send({ message: "Failed to update order status" });
-    }
-  }
-);
+    // ================= UPDATE ORDER STATUS (CHEF) =================
+    app.patch(
+      "/orders/:id/status",
+      verifyJWT,
+      verifyRole("chef"),
+      async (req, res) => {
+        try {
+          const { id } = req.params;
+          const { status } = req.body;
 
+          if (!status) {
+            return res.status(400).send({ message: "Status is required" });
+          }
 
+          const result = await orderCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                orderStatus: status,
+                updatedAt: new Date(),
+              },
+            }
+          );
+
+          if (result.matchedCount === 0) {
+            return res.status(404).send({ message: "Order not found" });
+          }
+
+          res.send({
+            success: true,
+            message: "Order status updated",
+          });
+        } catch (error) {
+          console.error("Order status update error:", error);
+          res.status(500).send({ message: "Failed to update order status" });
+        }
+      }
+    );
 
     // ---------------- Payments ----------------
     app.post("/create-payment-intent", verifyJWT, async (req, res) => {
@@ -560,24 +568,25 @@ app.patch(
 
     // GET /reviews/:mealId
     app.get("/reviews/:mealId", async (req, res) => {
-      try {
-        const mealId = req.params.mealId;
+  try {
+    const mealId = req.params.mealId;
 
-        if (!mealId) {
-          return res.status(400).json({ message: "Meal ID is required" });
-        }
+    if (!mealId) {
+      return res.status(400).json({ message: "Meal ID is required" });
+    }
 
-        const reviews = await reviewCollection
-          .find({ foodId: mealId })
-          .sort({ date: -1 }) // latest first
-          .toArray();
+    const reviews = await reviewCollection
+      .find({ foodId: mealId })
+      .sort({ date: -1 }) // latest first
+      .toArray();
 
-        res.status(200).json(reviews);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Failed to fetch reviews" });
-      }
-    });
+    res.status(200).json(reviews);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch reviews" });
+  }
+});
+
 
     // DELETE a review by ID
     app.delete("/reviews/:id", async (req, res) => {
@@ -648,34 +657,41 @@ app.patch(
 
     // _______________________Favorites__________________
     // Fetch all favorites for a user
-app.get("/favorites/:email", verifyJWT, async (req, res) => {
-  try {
-    const email = req.params.email;
-    const favorites = await favoritesCollection.find({ userEmail: email }).toArray();
-    res.status(200).json(favorites);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Failed to fetch favorites" });
-  }
-});
+    app.get("/favorites/:email", verifyJWT, async (req, res) => {
+      try {
+        const email = req.params.email;
+        const favorites = await favoritesCollection
+          .find({ userEmail: email })
+          .toArray();
+        res.status(200).json(favorites);
+      } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: "Failed to fetch favorites" });
+      }
+    });
 
-// DELETE a favorite meal
-app.delete("/favorites/:id", verifyJWT, async (req, res) => {
-  try {
-    const id = req.params.id;
-    if (!id) return res.status(400).json({ message: "Favorite ID required" });
+    // DELETE a favorite meal
+    app.delete("/favorites/:id", verifyJWT, async (req, res) => {
+      try {
+        const id = req.params.id;
+        if (!id)
+          return res.status(400).json({ message: "Favorite ID required" });
 
-    const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
+        const result = await favoritesCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
 
-    if (result.deletedCount === 0)
-      return res.status(404).json({ message: "Favorite not found" });
+        if (result.deletedCount === 0)
+          return res.status(404).json({ message: "Favorite not found" });
 
-    res.status(200).json({ success: true, message: "Favorite removed" });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: "Failed to remove favorite" });
-  }
-});
+        res.status(200).json({ success: true, message: "Favorite removed" });
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .json({ success: false, message: "Failed to remove favorite" });
+      }
+    });
 
     // POST /favorites
     app.post("/favorites", async (req, res) => {
@@ -722,7 +738,6 @@ app.delete("/favorites/:id", verifyJWT, async (req, res) => {
         res.status(500).json({ message: "Failed to add favorite" });
       }
     });
-    
 
     // Only admin can fetch all requests
     app.get(
@@ -842,18 +857,6 @@ app.delete("/favorites/:id", verifyJWT, async (req, res) => {
       }
     );
 
-    app.get(
-      "/admin/requests",
-      verifyJWT,
-      verifyRole("admin"),
-      async (req, res) => {
-        const requests = await requestsCollection.find().toArray();
-        res.send(requests);
-      }
-    );
-
-    // backend/index.js
-    // backend/index.js
     app.get("/admin/stats", async (req, res) => {
       try {
         const totalUsers = await usersCollection.countDocuments();
@@ -969,8 +972,7 @@ app.delete("/favorites/:id", verifyJWT, async (req, res) => {
   }
 }
 
-run().catch(console.dir);
+run().then(() => {
+  app.listen(port, () => console.log(`Server running on port ${port}`));
+}).catch(err => console.error(err));
 
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-});
