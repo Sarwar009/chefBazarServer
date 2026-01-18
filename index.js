@@ -24,36 +24,16 @@ admin.initializeApp({
 
 const app = express();
 
+// ---------------- CORS ----------------
 app.use(cors({
-  origin: true,
+  origin: [
+    "http://localhost:5173",
+    "https://chef-bazar.vercel.app",
+  ],
   credentials: true,
 }));
 
-// ---------------- CORS ----------------
-// const allowedOrigins = [
-//   "http://localhost:5173",
-//   "https://chef-bazar.vercel.app",
-  
-// ];
 
-// app.use(cors({
-//   origin: (origin, callback) => {
-//     if (!origin) return callback(null, true); // server-to-server or Postman
-//     if (allowedOrigins.includes(origin)) return callback(null, true);
-//     return callback(new Error(`CORS blocked for origin: ${origin}`));
-//   },
-//   credentials: true,
-// }));
-
-
-app.use((req, res, next) => {
-  if (req.method === "OPTIONS") {
-    res.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, PUT");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    return res.sendStatus(204);
-  }
-  next();
-});
 // ---------------- Middleware ----------------
 app.use(express.json());
 app.use(cookieParser());
@@ -169,11 +149,11 @@ async function run() {
         });
 
         res.cookie("accessToken", token, {
-          httpOnly: true,
-          secure: true, // because Vercel is HTTPS
-          sameSite: "none", // cross-site
-          maxAge: 30 * 24 * 60 * 60 * 1000,
-        });
+  httpOnly: true,
+  secure: isProduction,
+  sameSite: isProduction ? "none" : "lax",
+  maxAge: 30 * 24 * 60 * 60 * 1000,
+});
 
         res.status(200).send({ success: true, role: user.role });
       } catch (error) {
@@ -198,14 +178,22 @@ async function run() {
       res.send(users);
     });
 
-    app.get('/users/:email', async (req, res) => {
+  app.get("/users/:email", async (req, res) => {
   try {
-    const email = req.params.email;
+    const email = decodeURIComponent(req.params.email).toLowerCase();
     const user = await usersCollection.findOne({ email });
-    res.send(user || {});
+
+    if (!user) {
+      return res.status(404).send({ role: "user", chefId: null });
+    }
+
+    res.send({
+      role: user.role,
+      chefId: user.chefId || null,
+    });
   } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: 'Server error' });
+    console.error("User role error:", err);
+    res.status(500).send({ message: "Failed to fetch role" });
   }
 });
 
@@ -260,45 +248,58 @@ async function run() {
     });
 
     app.get("/meals", async (req, res) => {
-      try {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const search = req.query.search || "";
-        const category = req.query.category || "All";
-        const sortOrder = req.query.sort || ""; // "asc" or "desc"
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
 
-        const query = {};
+    const total = await mealsCollection.countDocuments();
 
-        // Search by meal name
-        if (search) {
-          query.foodName = { $regex: search, $options: "i" }; // <-- make sure field name matches DB
-        }
+    const meals = await mealsCollection
+      .find()
+      .skip(skip)
+      .limit(limit)
+      .toArray();
 
-        // Filter by category
-        if (category && category !== "All") {
-          query.foodCategory = category;
-        }
-
-        // Total count for pagination
-        const total = await mealsCollection.countDocuments(query);
-
-        // Sorting
-        let cursor = mealsCollection.find(query);
-        if (sortOrder === "asc") cursor = cursor.sort({ price: 1 });
-        else if (sortOrder === "desc") cursor = cursor.sort({ price: -1 });
-
-        // Pagination
-        const meals = await cursor
-          .skip((page - 1) * limit)
-          .limit(limit)
-          .toArray();
-
-        res.status(200).json({ meals, total });
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: "Failed to fetch meals" });
-      }
+    res.send({
+      meals,
+      total,
     });
+  } catch (error) {
+    console.error("Meals fetch error:", error);
+    res.status(500).send({ message: "Failed to fetch meals" });
+  }
+});
+
+app.get("/meals/most-loved", async (req, res) => {
+  try {
+    const meals = await mealsCollection
+      .find()
+      .sort({ foodRating: -1 })
+      .limit(8)
+      .toArray();
+
+    res.send(meals);
+  } catch (err) {
+    console.error("Most loved fetch error:", err);
+    res.status(500).send({ message: "Failed to fetch most loved meals" });
+  }
+});
+
+app.get("/meals/latest", async (req, res) => {
+  try {
+    const meals = await mealsCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(8)
+      .toArray();
+
+    res.send(meals);
+  } catch (err) {
+    res.status(500).send({ message: "Failed to fetch latest meals" });
+  }
+});
+
 
     app.get("/meals/:id", async (req, res) => {
       try {
@@ -311,6 +312,7 @@ async function run() {
         res.status(500).send({ error: err.message });
       }
     });
+
 
     // UPDATE MEAL (Chef only)
     app.patch("/meals/:id", verifyJWT, async (req, res) => {
@@ -431,31 +433,46 @@ async function run() {
       res.send(orders);
     });
 
+    // ================= GET CHEF =====================
+
+    app.get("/chefs", async (req, res) => {
+  try {
+    const chefs = await usersCollection
+      .find({ role: "chef" })
+      .toArray();
+
+    res.send(chefs);
+  } catch (err) {
+    res.status(500).send({ message: "Failed to load chefs" });
+  }
+});
+
     // ================= CHEF ORDERS =================
     app.get(
-      "/orders/chef/:chefId",
-      verifyJWT,
-      verifyRole("chef"),
-      async (req, res) => {
-        try {
-          const chefId = req.params.chefId;
+  "/orders/chef/:chefId",
+  verifyJWT,
+  verifyRole("chef"),
+  async (req, res) => {
+    try {
+      const chefId = req.params.chefId;
 
-          if (!chefId) {
-            return res.status(400).send({ message: "ChefId required" });
-          }
-
-          const orders = await orderCollection
-            .find({ chefId })
-            .sort({ orderTime: -1 })
-            .toArray();
-
-          res.send(orders);
-        } catch (error) {
-          console.error("Chef orders error:", error);
-          res.status(500).send({ message: "Failed to fetch chef orders" });
-        }
+      if (!chefId) {
+        return res.status(400).send({ message: "ChefId required" });
       }
-    );
+
+      const orders = await orderCollection
+        .find({ chefId })
+        .sort({ orderTime: -1 })
+        .toArray();
+
+      res.send(orders);
+    } catch (error) {
+      console.error("Chef orders error:", error);
+      res.status(500).send({ message: "Failed to fetch chef orders" });
+    }
+  }
+);
+
 
     // ================= UPDATE ORDER STATUS (CHEF) =================
     app.patch(
@@ -570,7 +587,7 @@ app.get("/reviews/:mealId", async (req, res) => {
     if (!mealId) return res.status(400).json({ message: "Meal ID is required" });
 
     const reviews = await reviewCollection
-      .find({ foodId: new ObjectId(mealId) })
+      .find({ mealId })
       .sort({ date: -1 })
       .toArray();
 
@@ -688,7 +705,7 @@ app.get("/reviews/:mealId", async (req, res) => {
     });
 
     // POST /favorites
-    app.post("/favorites", async (req, res) => {
+    app.post("/favorites",verifyJWT, async (req, res) => {
       try {
         const {
           userEmail,
@@ -786,12 +803,12 @@ app.get("/reviews/:mealId", async (req, res) => {
 
     // Admin fetch all requests
     app.get("/chef-requests", async (req, res) => {
-      const requests = await requestsCollection
-        .find({ status: "pending" })
-        .toArray();
+  const requests = await requestsCollection
+    .find({ requestStatus: "pending" })
+    .toArray();
 
-      res.send(requests);
-    });
+  res.send(requests);
+});
 
     app.patch("/chef-requests/:id", async (req, res) => {
       const { id } = req.params;
@@ -880,12 +897,6 @@ app.get("/reviews/:mealId", async (req, res) => {
         console.error("Admin stats error:", err);
         res.status(500).send({ error: "Server Error" });
       }
-      console.log({
-        totalUsers,
-        pendingOrders,
-        deliveredOrders,
-        totalPaymentAmount,
-      });
     });
 
     app.patch(
